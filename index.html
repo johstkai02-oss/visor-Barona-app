@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Telémetro Barona</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: monospace; }
+        body { background: #000; color: #0f4; overflow: hidden; height: 100vh; width: 100vw; }
+        #video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; transition: filter 0.2s; }
+        .nocturno { filter: brightness(2.2) contrast(1.8) sepia(1) hue-rotate(75deg) saturate(4); }
+        #reticula { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; }
+        .hud { position: fixed; top: 10px; left: 10px; right: 10px; background: rgba(0,15,5,0.75); padding: 10px; border: 1px solid #0f4; z-index: 3; font-size: 13px; }
+        .panel-inf { position: fixed; bottom: 15px; left: 10px; right: 10px; background: rgba(0,15,5,0.85); padding: 10px; border: 1px solid #0f4; z-index: 3; }
+        button, select { background: #031; color: #0f4; border: 1px solid #0f4; padding: 8px; font-weight: bold; margin-top: 5px; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <video id="video" class="nocturno" autoplay playsinline muted></video>
+    <canvas id="reticula"></canvas>
+
+    <div class="hud">
+        <div id="txt-rumbo">RUMBO: --° | INCLINACIÓN: --°</div>
+        <div id="txt-gps">GPS: Esperando señal...</div>
+        <div id="txt-dist">DISTANCIA OBJETIVO: -- m</div>
+        <div id="txt-audio">ACÚSTICA: -- dB | HORÓSCOPO: <span id="horo"></span></div>
+    </div>
+
+    <div class="panel-inf">
+        <label>OBJETIVO:</label>
+        <select id="tamano-obj" onchange="calcularTriangulacion()">
+            <option value="1.75">Persona (1.75m)</option>
+            <option value="1.50">Vehículo (1.50m)</option>
+            <option value="3.00">Edificio 1 piso (3.0m)</option>
+        </select>
+        <select id="mils-obj" onchange="calcularTriangulacion()">
+            <option value="10">10 mils (Cerca)</option>
+            <option value="5">5 mils (Medio)</option>
+            <option value="2">2 mils (Lejos)</option>
+            <option value="1">1 mil (Muy lejos)</option>
+        </select><br>
+        <button onclick="activarTodo()">1. ACTIVAR SENSORES</button>
+        <button onclick="document.getElementById('video').classList.toggle('nocturno')">HIPERVISIÓN</button>
+    </div>
+    <script>
+        const cvs = document.getElementById('reticula');
+        const ctx = cvs.getContext('2d');
+        const signos = ["FUEGO: Resistencia alta", "TIERRA: Precisión", "AIRE: Agilidad", "AGUA: Enfoque"];
+        document.getElementById('horo').innerText = signos[new Date().getDate() % 4];
+
+        function dibujarReticula(pitch = 0, roll = 0) {
+            cvs.width = window.innerWidth; cvs.height = window.innerHeight;
+            const cx = cvs.width / 2, cy = cvs.height / 2;
+            ctx.clearRect(0, 0, cvs.width, cvs.height);
+            ctx.strokeStyle = "#00ff44"; ctx.lineWidth = 1.5;
+
+            // Línea de horizonte artificial (calibración nivel)
+            ctx.save(); ctx.translate(cx, cy); ctx.rotate(-roll * Math.PI / 180);
+            ctx.beginPath(); ctx.moveTo(-90, 0); ctx.lineTo(-20, 0); ctx.moveTo(20, 0); ctx.lineTo(90, 0); ctx.stroke();
+            ctx.restore();
+
+            // Marcas estadimétricas (Mils para triangulación)
+            [15, 30, 60].forEach(r => {
+                ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+            });
+            calcularTriangulacion();
+        }
+
+        function calcularTriangulacion() {
+            const alturaReal = parseFloat(document.getElementById('tamano-obj').value);
+            const mils = parseFloat(document.getElementById('mils-obj').value);
+            // Fórmula telemétrica real: Distancia = (Altura * 1000) / Mils
+            const distancia = (alturaReal * 1000) / mils;
+            document.getElementById('txt-dist').innerText = `DISTANCIA TRIANGULADA: ${distancia.toFixed(1)} metros`;
+        }
+        async function activarTodo() {
+            // 1. Cámara y Micrófono (Audio + Video en 1 sola petición rápida)
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: true });
+            document.getElementById('video').srcObject = stream;
+
+            // Analizador acústico (Micrófono)
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const mic = audioCtx.createMediaStreamSource(stream);
+            const analyser = audioCtx.createAnalyser();
+            mic.connect(analyser);
+            const data = new Uint8Array(analyser.frequencyBinCount);
+            setInterval(() => {
+                analyser.getByteFrequencyData(data);
+                let vol = Math.round(data.reduce((a, b) => a + b) / data.length);
+                document.getElementById('txt-audio').innerHTML = `ACÚSTICA: ${vol} dB | HORO: ${document.getElementById('horo').innerText}`;
+            }, 300);
+
+            // 2. Brújula + Inclinación (Pitch/Roll)
+            if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+                await DeviceOrientationEvent.requestPermission();
+            }
+            window.addEventListener('deviceorientation', e => {
+                let rumbo = Math.round(e.webkitCompassHeading || (360 - e.alpha));
+                let pitch = Math.round(e.beta - 90);
+                document.getElementById('txt-rumbo').innerText = `RUMBO: ${rumbo}° | ÁNGULO: ${pitch}°`;
+                dibujarReticula(pitch, e.gamma || 0);
+            });
+
+            // 3. GPS Alta Precisión
+            navigator.geolocation.watchPosition(p => {
+                document.getElementById('txt-gps').innerText = `GPS: ${p.coords.latitude.toFixed(5)}, ${p.coords.longitude.toFixed(5)} (±${Math.round(p.coords.accuracy)}m)`;
+            }, null, { enableHighAccuracy: true });
+        }
+        dibujarReticula();
+    </script>
+</body>
+</html>
